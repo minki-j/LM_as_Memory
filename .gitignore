@@ -1,0 +1,9 @@
+training_results/
+model/
+data/
+
+.env
+
+.DS_Store
+
+modal_axolotl/
