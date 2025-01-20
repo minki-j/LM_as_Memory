@@ -1,0 +1,1 @@
+This repository is a series of experiments to learn how post-training can add new knowledge to LLMs, and how to make it more efficient, more robust, and more effective.

@@ -1,9 +1,7 @@
-training_results/
-model/
-data/
-
+.DS_Store
 .env
 
-.DS_Store
+./results/
+exclude/
 
-modal_axolotl/
+*.pyc
