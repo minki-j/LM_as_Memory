@@ -247,7 +247,13 @@ def fine_tune_with_lora(train_dataset):
     import os
     import torch
     from datasets import load_dataset, Dataset
-    from transformers import BitsAndBytesConfig, AutoModelForCausalLM, AutoTokenizer
+    from transformers import (
+        BitsAndBytesConfig,
+        AutoModelForCausalLM,
+        AutoTokenizer,
+        DataCollatorWithPadding,
+        DefaultDataCollator,
+    )
     from trl import SFTTrainer, setup_chat_format, SFTConfig
     from peft import LoraConfig
 
@@ -276,7 +282,7 @@ def fine_tune_with_lora(train_dataset):
     if train_dataset is None:
         dataset = load_dataset(dataset_path, name=dataset_name, cache_dir=cache_dir)
     else:
-        dataset = Dataset.from_dict({"messages": train_dataset}).train_test_split(
+        dataset = Dataset.from_dict({"input_ids": train_dataset}).train_test_split(
             test_size=0.01, shuffle=False, seed=42
         )
 
@@ -299,7 +305,7 @@ def fine_tune_with_lora(train_dataset):
     args = SFTConfig(
         output_dir=run_name,  # Directory to save model checkpoints
         num_train_epochs=1,  # Number of training epochs
-        per_device_train_batch_size=2,  # Batch size per GPU
+        per_device_train_batch_size=1,  # Batch size per GPU
         gradient_accumulation_steps=2,  # Accumulate gradients for larger effective batch
         gradient_checkpointing=True,  # Trade compute for memory savings
         optim="adamw_torch_fused",  # Use fused AdamW for efficiency
@@ -312,16 +318,17 @@ def fine_tune_with_lora(train_dataset):
         bf16=True,  # Use bfloat16 precision
         push_to_hub=False,  # Don't push to HuggingFace Hub
         report_to="none",  # Disable external logging
-        max_seq_length=1512,
+        max_seq_length=4096,
     )
 
     # Create SFTTrainer with LoRA configuration
     trainer = SFTTrainer(
         model=model,
         args=args,
+        data_collator=DefaultDataCollator(tokenizer=tokenizer, mlm=False),
         train_dataset=dataset["train"],
-        peft_config=peft_config,  # LoRA configuration
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
+        peft_config=peft_config,
     )
 
     trainer.train()
@@ -387,5 +394,5 @@ def main():
     fine_tune_with_lora.remote(data)
     print("fine-tuned with LoRA")
 
-    generat_with_finetuned_model.remote()
-    print("generated with finetuned model")
+    # generat_with_finetuned_model.remote()
+    # print("generated with finetuned model")
