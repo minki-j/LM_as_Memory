@@ -1,7 +1,11 @@
 .DS_Store
 .env
 
-./results/
+results/
+datasets/
 exclude/
 
 *.pyc
+
+
+# sketchpad.ipynb
