@@ -298,18 +298,50 @@ def generate_with_finetuned_model():
         [
             {
                 "role": "LA",
-                # "content": "Do you think everyone can be an artist?",
-                "content": "Etel, you talked about her olive tree paintings during interview with me. you said those paintings should not be ___. Do you remember what you said?",
-            },  # Everyone is in a certain measure. Yes, everyone wants to express something as well as they can. When I undertake to do something, I do it completely. I do it full-time, like I did with writing. Sometimes one thing, sometimes the other; it’s already a lot and it’s all I did. When I was young, I sometimes helped out with the press, I made cover designs for the books. Sometimes I proofread texts.
+                "content": "Etel, you told me about the fun condition about your olive tree paintings. You said those paintings should not be ___. Do you remember what you said?",  # they can't be separated
+            },
             {"role": "EA", "content": ""},
         ],
         [
             {
                 "role": "LA",
-                # "content": "What is “beauty” for you, Etel?",
-                # "content": "What was the condition that Etel Adnan had for her olive tree paintings? Don't repeat what I'm saying. Answer my question.",
-                "content": "Etel, Which poets did you read with your teacher Gabriel Bounoure?",
-            },  # So, it’s very simple. We’re going to start at the beginning. Last October, I got a note from a curator at Tate Modern in London. His name is Achim Borchardt-Hume; he has lots of friends all over the world. I had never met him, but he’d seen something somewhere that I said about Cézanne. And he said to me: “We’re putting on the first ever retrospective of Cézanne in England.” I told him: “I hope you’re going to put The Gardener Vallier in this show.”
+                "content": "Etel, you said you were in love with two people at the same time. Who were they?",  # Proffessor and girlfriend who lived in the same dorm
+            },
+            {"role": "EA", "content": ""},
+        ],
+        [
+            {
+                "role": "LA",
+                "content": "What book did your father know by heart?",  # Curan
+            },
+            {"role": "EA", "content": ""},
+        ],
+        [
+            {
+                "role": "LA",
+                "content": "Why did you suggest that your partner Simone should start sculpting?",  # One day she saw her holding two eggplants at kitchen
+            },
+            {"role": "EA", "content": ""},
+        ],
+        [
+            {
+                "role": "LA",
+                "content": "What color do you associate with Lebanon?",  # pink
+            },
+            {"role": "EA", "content": ""},
+        ],
+        [
+            {
+                "role": "LA",
+                "content": "You told me about an unplesant incident when you worked at the army commissarite. Can you tell me about it again?",  # asked her to go up table and he raised her skirt.
+            },
+            {"role": "EA", "content": ""},
+        ],
+        [
+            {
+                "role": "LA",
+                "content": "When you were studying your docterate, what did you do for your girlfriend to make her happy?",  # she wrote her girlfriend's paper on Russian literature
+            },
             {"role": "EA", "content": ""},
         ],
     ]
@@ -333,7 +365,7 @@ def generate_with_finetuned_model():
         local_files_only=True,
     )
 
-    #! Loading model here and loading adapter for each checkpoints is more efficient way to do this. However, there is an error with layer name. Model has 'model.embed_tokens.weight' but the adapter has 'model.embed_tokens.modules_to_save.default.modules_to_save.weight.' as a key. Need to fix this. 
+    #! Loading model here and loading adapter for each checkpoints is more efficient way to do this. However, there is an error with layer name. Model has 'model.embed_tokens.weight' but the adapter has 'model.embed_tokens.modules_to_save.default.modules_to_save.weight.' as a key. Need to fix this.
     # model = AutoModelForCausalLM.from_pretrained(
     #     model_name,
     #     cache_dir=cache_dir,
@@ -343,13 +375,24 @@ def generate_with_finetuned_model():
     # )
     # model.resize_token_embeddings(len(tokenizer))
     # print("model is loaded")
+    # ! we can use PeftModel to get around this issue. 
+    # model = AutoPeftModelForCausalLM.from_pretrained(
+    #     lora_model_name + f"/checkpoint-{1}",
+    #     cache_dir=cache_dir,
+    #     quantization_config=quantization_config,
+    #     local_files_only=True,
+    #     device_map="cuda",
+    # )
 
     checkpoint_steps = [20, 12, 8]
 
     for step in checkpoint_steps:
         print(f">>>>>>> step {step} >>>>>>>")
+        # ! getting an error saying "adapter name" is missing. It's the second positional paramete which is not necessary according to the documentation. 
         # model.load_adapter(lora_model_name + f"/checkpoint-{step}")
-        # print("adapter is loaded")
+        # print("a new adapter is loaded")
+
+        # ! In the meantime, I'll just load the whole model every time. 
         model = AutoPeftModelForCausalLM.from_pretrained(
             lora_model_name + f"/checkpoint-{step}",
             cache_dir=cache_dir,
