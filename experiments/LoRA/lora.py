@@ -1,23 +1,25 @@
 import time
 import modal
 from datetime import datetime
+from utils.generate import generate_and_print
+
 
 model_name = "microsoft/phi-4"  # 14.7B / 27GB
-dataset_path = "./dataset"  # 27 samples with 4096 tokens
+dataset_path = "./dataset"  # 26 samples with 4096 tokens
 cache_dir = "./.cache/huggingface"
 run_name = f"{model_name.split('/')[-1]}_LoRA_{datetime.fromtimestamp(time.time() - 5 * 60 * 60).strftime('%m%d-%H:%M')}"
 output_dir = f"./runs/{run_name}"
 
 # LoRA Config
-lora_rank_dimension = 18
+lora_rank_dimension = 6
 lora_alpha = 8
 lora_dropout = 0.05
 lora_bias = "none"
 lora_target_modules = "all-linear"
 
 # Training Config
-num_train_epochs = 10
-batch_size = 4
+num_train_epochs = 20
+batch_size = 13
 optimizer = "adamw_torch_fused"
 gradient_accumulation_steps = 2
 learning_rate = 2e-4  # Learning rate from QLoRA paper
@@ -26,10 +28,12 @@ warmup_ratio = 0.03  # Need for AdamW to gather the moving average.
 lr_scheduler_type = "constant"  # Keep learning rate constant after warmup
 max_seq_length = 2048
 gradient_checkpointing = True
+packing = False  # Don't concatenate multiple sequences to meet max_seq_length
 
 # Modal Fine-Tuning Config
-number_of_gpu = 4
-modal_fine_tuning_gpu = f"A10g:{number_of_gpu}"
+# A100-80GB(3.4$/h) A10g=24GB(1.1$/h) / L4=24GB(0.8$/h) / T4=16GB(0.59$/h)
+number_of_gpu = 1
+modal_fine_tuning_gpu = f"a100-80gb:{number_of_gpu}"
 
 
 image = (
@@ -59,71 +63,6 @@ vol = modal.Volume.from_name(
     "lm-as-memory",
     create_if_missing=True,
 )
-
-
-def generate_and_print(
-    model,
-    tokenizer,
-    device,
-    inputs,
-    max_new_tokens,
-    generation_prompt,
-    skip_special_tokens,
-    only_return_generated=True,
-    temperature=0.7,
-    top_p=0.85,
-    top_k=40,
-):
-    templated_inputs = [
-        tokenizer.apply_chat_template(
-            input,
-            tokenize=False,
-            generation_prompt=generation_prompt,
-        )
-        for input in inputs
-    ]
-    # print("templated_inputs:", templated_inputs)
-
-    # Batch tokenize
-    batch_inputs = tokenizer(
-        templated_inputs,
-        return_tensors="pt",
-        padding=True,
-        padding_side="left",
-    ).to(device)
-
-    # Batch generate
-    print("Generating...")
-    outputs = model.generate(
-        **batch_inputs,
-        max_new_tokens=max_new_tokens,
-        do_sample=True,
-        temperature=temperature,  # Randomize temperature for exploration
-        top_p=top_p,  # Randomize nucleus sampling parameter
-        top_k=top_k,  # Randomize top-k value
-        pad_token_id=tokenizer.pad_token_id,
-    )
-    print("Done")
-
-    # Decode all outputs
-    responses = [
-        tokenizer.decode(
-            (
-                output[len(batch_inputs["input_ids"][0]) :]
-                if only_return_generated
-                else output
-            ),
-            skip_special_tokens=skip_special_tokens,
-        )
-        for output in outputs
-    ]
-    for response in responses:
-        print(
-            response.replace("<|endoftext|>", "").replace(
-                "<|im_end|>", "<|im_end|>\n\n"
-            )
-        )
-        print("\n----------------\n")
 
 
 @app.function(
@@ -216,25 +155,22 @@ def generate_with_base_model():
 def fine_tune_with_lora():
     import os
     import torch
-    from datasets import load_dataset, Dataset, load_from_disk
+    import wandb
+    from datasets import load_from_disk
     from transformers import (
         BitsAndBytesConfig,
         AutoModelForCausalLM,
         AutoTokenizer,
         DataCollatorWithPadding,
-        DefaultDataCollator,
     )
-    from trl import SFTTrainer, setup_chat_format, SFTConfig
+    from trl import SFTTrainer, SFTConfig
     from peft import LoraConfig
-    from torch.utils.data import DataLoader
-    import wandb
 
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
     os.chdir("/data")
 
     float_type = torch.bfloat16
-    print("float_type:", float_type)
 
     config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -249,6 +185,7 @@ def fine_tune_with_lora():
         quantization_config=config,
         device_map="auto",
     )
+    print("model:", model)
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
     tokenizer.chat_template = "{% for message in messages %}{% if (message['role'] == 'system') %}{{'<|im_start|>system<|im_sep|>' + message['content'] + '<|im_end|>'}}{% elif (message['role'] == 'LA') %}{{'<|im_start|>&29njkn(dkj38$%nkjn#<|im_sep|>' + message['content'] + '<|im_end|>'}}{% elif (message['role'] == 'EA') %}{{'<|im_start|>foi%ioh!@oih(&idl*<|im_sep|>' + message['content'] + '<|im_end|>'}}{% elif (message['role'] == 'user') %}{{'<|im_start|>user<|im_sep|>' + message['content'] + '<|im_end|>'}}{% elif (message['role'] == 'assistant') %}{{'<|im_start|>assistant<|im_sep|>' + message['content'] + '<|im_end|>'}}{% endif %}{% endfor %}"
@@ -265,10 +202,7 @@ def fine_tune_with_lora():
     tokenizer.save_pretrained(output_dir + "/tokenizer")
 
     print("resize token embeddings with new vocab length: ", len(tokenizer))
-    model.resize_token_embeddings(
-        len(tokenizer),
-        mean_resizing=False,  # New tokens are initialized with random values instead of mean
-    )
+    model.resize_token_embeddings(len(tokenizer), mean_resizing=True)
 
     tokenizer.pad_token = tokenizer.eos_token
 
@@ -283,6 +217,9 @@ def fine_tune_with_lora():
         bias=lora_bias,  # Bias type for LoRA. the corresponding biases will be updated during training.
         target_modules=lora_target_modules,  # Which modules to apply LoRA to
         task_type="CAUSAL_LM",  # Task type for model architecture
+        modules_to_save=[
+            "embed_tokens"
+        ],  # Train embedding layer since we added new tokens
     )
 
     wandb.init(
@@ -324,7 +261,7 @@ def fine_tune_with_lora():
         report_to="wandb",
         save_only_model=True,
         max_seq_length=max_seq_length,
-        packing=False,  # Don't concatenate multiple sequences to meet max_seq_length
+        packing=packing,
     )
 
     trainer = SFTTrainer(
@@ -348,12 +285,12 @@ def fine_tune_with_lora():
 @app.function(
     image=image,
     volumes={"/data": vol},
-    gpu="T4",
+    gpu="l4",
     timeout=30 * 60,
 )
 def generate_with_finetuned_model():
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
     from peft import AutoPeftModelForCausalLM
-    from transformers import AutoTokenizer, BitsAndBytesConfig
     import torch
     import os
 
@@ -361,14 +298,17 @@ def generate_with_finetuned_model():
         [
             {
                 "role": "LA",
-                "content": "Do you think everyone can be an artist?",
+                # "content": "Do you think everyone can be an artist?",
+                "content": "Etel, you talked about her olive tree paintings during interview with me. you said those paintings should not be ___. Do you remember what you said?",
             },  # Everyone is in a certain measure. Yes, everyone wants to express something as well as they can. When I undertake to do something, I do it completely. I do it full-time, like I did with writing. Sometimes one thing, sometimes the other; it’s already a lot and it’s all I did. When I was young, I sometimes helped out with the press, I made cover designs for the books. Sometimes I proofread texts.
             {"role": "EA", "content": ""},
         ],
         [
             {
                 "role": "LA",
-                "content": "What is “beauty” for you, Etel?",
+                # "content": "What is “beauty” for you, Etel?",
+                # "content": "What was the condition that Etel Adnan had for her olive tree paintings? Don't repeat what I'm saying. Answer my question.",
+                "content": "Etel, Which poets did you read with your teacher Gabriel Bounoure?",
             },  # So, it’s very simple. We’re going to start at the beginning. Last October, I got a note from a curator at Tate Modern in London. His name is Achim Borchardt-Hume; he has lots of friends all over the world. I had never met him, but he’d seen something somewhere that I said about Cézanne. And he said to me: “We’re putting on the first ever retrospective of Cézanne in England.” I told him: “I hope you’re going to put The Gardener Vallier in this show.”
             {"role": "EA", "content": ""},
         ],
@@ -385,7 +325,7 @@ def generate_with_finetuned_model():
         bnb_4bit_compute_dtype=torch.bfloat16,
     )
 
-    lora_model_name = "./runs/phi-4_LoRA_0127-10:44"
+    lora_model_name = "./runs/phi-4_LoRA_0128-17:58"
 
     tokenizer = AutoTokenizer.from_pretrained(
         lora_model_name + "/tokenizer",
@@ -393,16 +333,29 @@ def generate_with_finetuned_model():
         local_files_only=True,
     )
 
-    checkpoint_steps = [30]
+    #! Loading model here and loading adapter for each checkpoints is more efficient way to do this. However, there is an error with layer name. Model has 'model.embed_tokens.weight' but the adapter has 'model.embed_tokens.modules_to_save.default.modules_to_save.weight.' as a key. Need to fix this. 
+    # model = AutoModelForCausalLM.from_pretrained(
+    #     model_name,
+    #     cache_dir=cache_dir,
+    #     local_files_only=True,
+    #     device_map="cuda",
+    #     quantization_config=quantization_config,
+    # )
+    # model.resize_token_embeddings(len(tokenizer))
+    # print("model is loaded")
+
+    checkpoint_steps = [20, 12, 8]
 
     for step in checkpoint_steps:
         print(f">>>>>>> step {step} >>>>>>>")
+        # model.load_adapter(lora_model_name + f"/checkpoint-{step}")
+        # print("adapter is loaded")
         model = AutoPeftModelForCausalLM.from_pretrained(
             lora_model_name + f"/checkpoint-{step}",
             cache_dir=cache_dir,
             quantization_config=quantization_config,
             local_files_only=True,
-            device_map="auto",
+            device_map="cuda",
         )
 
         generate_and_print(
@@ -410,14 +363,13 @@ def generate_with_finetuned_model():
             tokenizer,
             device,
             inputs=questions,
-            max_new_tokens=50,
+            max_new_tokens=100,
             generation_prompt=False,
             skip_special_tokens=False,
             only_return_generated=False,
             temperature=0.01,
         )
 
-        # remove the model from memory
         del model
 
 
